@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>AI Object Detector</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#080b12;color:#fff;font-family:Arial,sans-serif;overflow:hidden}
+.app{width:100vw;height:100vh;position:relative}
+#camera{position:absolute;width:100%;height:100%;object-fit:cover;background:#000}
+#canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.topbar{position:absolute;top:0;left:0;width:100%;padding:18px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(rgba(0,0,0,.65),transparent);z-index:5}
+.title{font-size:20px;font-weight:bold}
+.status{padding:7px 12px;border-radius:20px;background:rgba(255,255,255,.15);backdrop-filter:blur(8px);font-size:12px}
+.bottom{position:absolute;bottom:0;left:0;width:100%;padding:20px;background:linear-gradient(transparent,rgba(0,0,0,.85));z-index:5}
+.info{text-align:center;margin-bottom:15px}
+.detected{font-size:18px;font-weight:bold}
+.category{margin-top:5px;font-size:14px;opacity:.8}
+button{width:100%;border:0;padding:15px;border-radius:14px;background:#fff;color:#000;font-size:16px;font-weight:bold}
+button:active{transform:scale(.98)}
+#loading{position:absolute;inset:0;background:#080b12;display:flex;justify-content:center;align-items:center;flex-direction:column;z-index:20}
+.loader{width:45px;height:45px;border:4px solid rgba(255,255,255,.2);border-top:4px solid white;border-radius:50%;animation:spin 1s linear infinite;margin-bottom:15px}
+@keyframes spin{to{transform:rotate(360deg)}}
+#error{color:#ff6b6b;text-align:center;padding:20px;display:none}
+</style>
+</head>
+<body>
+<div class="app">
+<video id="camera" autoplay playsinline muted></video>
+<canvas id="canvas"></canvas>
+
+<div class="topbar">
+<div class="title">👁️ AI Vision</div>
+<div class="status" id="status">Loading AI...</div>
+</div>
+
+<div id="loading">
+<div class="loader"></div>
+<div>Loading AI model...</div>
+<div id="error"></div>
+</div>
+
+<div class="bottom">
+<div class="info">
+<div class="detected" id="detected">Looking for objects...</div>
+<div class="category" id="category">Point your camera at something</div>
+</div>
+<button id="cameraButton">Start Camera</button>
+</div>
+</div>
+
+<script>
+const video=document.getElementById("camera");
+const canvas=document.getElementById("canvas");
+const ctx=canvas.getContext("2d");
+const loading=document.getElementById("loading");
+const errorBox=document.getElementById("error");
+const status=document.getElementById("status");
+const detected=document.getElementById("detected");
+const category=document.getElementById("category");
+const cameraButton=document.getElementById("cameraButton");
+
+let model=null,stream=null,detecting=false;
+
+const livingThings=new Set([
+"person","bird","cat","dog","horse","sheep","cow",
+"elephant","bear","zebra","giraffe"
+]);
+
+const colors=[
+"#00FF88","#00BFFF","#FFD400","#FF4D6D",
+"#A855F7","#FF8A00","#00E5FF","#FF66CC"
+];
+
+function prettyName(name){
+return name.split(" ").map(w=>w.charAt(0).toUpperCase()+w.slice(1)).join(" ");
+}
+
+function getCategory(name){
+return livingThings.has(name)?"Living Thing":"Non-Living Thing";
+}
+
+async function startCamera(){
+try{
+status.textContent="Starting camera...";
+stream=await navigator.mediaDevices.getUserMedia({
+video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},
+audio:false
+});
+video.srcObject=stream;
+await video.play();
+cameraButton.textContent="Camera Running";
+status.textContent="AI Ready";
+resizeCanvas();
+detectObjects();
+}catch(err){
+console.error(err);
+status.textContent="Camera Error";
+errorBox.style.display="block";
+errorBox.textContent="Camera permission was denied or camera is unavailable.";
+}
+}
+
+function resizeCanvas(){
+canvas.width=video.videoWidth;
+canvas.height=video.videoHeight;
+}
+
+video.addEventListener("loadedmetadata",resizeCanvas);
+
+async function detectObjects(){
+if(!model||detecting)return;
+detecting=true;
+try{
+const predictions=await model.detect(video);
+drawDetections(predictions);
+}catch(error){console.error(error)}
+detecting=false;
+requestAnimationFrame(detectObjects);
+}
+
+function drawDetections(predictions){
+ctx.clearRect(0,0,canvas.width,canvas.height);
+let strongestObject=null;
+
+predictions.forEach((prediction,index)=>{
+if(prediction.score<0.55)return;
+
+const [x,y,width,height]=prediction.bbox;
+const objectName=prediction.class;
+const niceName=prettyName(objectName);
+const objectCategory=getCategory(objectName);
+const color=colors[index%colors.length];
+
+if(!strongestObject||prediction.score>strongestObject.score)
+strongestObject=prediction;
+
+ctx.strokeStyle=color;
+ctx.lineWidth=4;
+ctx.strokeRect(x,y,width,height);
+
+const confidence=Math.round(prediction.score*100);
+const label=`${niceName} • ${objectCategory} • ${confidence}%`;
+
+ctx.font="bold 15px Arial";
+const textWidth=ctx.measureText(label).width;
+const labelHeight=32;
+
+ctx.fillStyle=color;
+ctx.fillRect(x,Math.max(0,y-labelHeight),textWidth+18,labelHeight);
+
+ctx.fillStyle="#000";
+ctx.fillText(label,x+9,Math.max(20,y-10));
+});
+
+if(strongestObject){
+const name=prettyName(strongestObject.class);
+const type=getCategory(strongestObject.class);
+const confidence=Math.round(strongestObject.score*100);
+detected.textContent=`${name} detected`;
+category.textContent=`${type} • ${confidence}% confidence`;
+}else{
+detected.textContent="No object detected";
+category.textContent="Point your camera at something";
+}
+}
+
+async function loadAI(){
+try{
+status.textContent="Loading model...";
+model=await cocoSsd.load();
+loading.style.display="none";
+status.textContent="AI Ready";
+await startCamera();
+}catch(err){
+console.error(err);
+errorBox.style.display="block";
+errorBox.textContent="Could not load the AI model.";
+}
+}
+
+cameraButton.addEventListener("click",async()=>{
+if(!stream)await startCamera();
+});
+
+loadAI();
+</script>
+</body>
+</html>
